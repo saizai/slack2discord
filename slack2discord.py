@@ -35,20 +35,18 @@
 #     Slack edited messages
 #         check if this is supported / translated
 #     attachments & embeds
-#         Break up embeds too (character limit 4096)
-#             try to cut at paragraph or line break (or at least at word break, not within a link/word/etc)
+#         If total embeds length > 6000, send as separate messages
 #         If embed is for a file, file has to go on the same message as its embed
 #             see e.g. first send() command within send_message()
-#         Allow null message when converting whole thing to rich text embed
-#         Use embeds to reduce # of segments (message is just 2000)
-#         Convert username to mention in embeds; see parse_text() and parse_messages()
-#             Move fill_references() to be part of parse_text(), not in core loop
 #         Add embeds for URLs
 #             If URL is external image location, use image embed type and maybe just reupload image
 #             If multiple URLs in a message, maybe multiple embeds (for preview cards)?
+#     message pinning
 #     other message support
 #         bot messages
 #         join/part messages
+#         reactions
+#             on behalf of actual user? by bot spoofing user using webhook?
 #         emotes?
 #             check if Slack has markup for this
 #         use Slack's "blocks" rather than its textdump?
@@ -58,7 +56,232 @@
 #         is it possible to backdate messages?
 #             AFAICT no but should check API more
 
+# discord.py async calls https://discordpy.readthedocs.io/en/stable/api.html :
+#     Connectable, Client, AutoShardedClient, VoiceProtocol
+#         connect
+#     Messageable, PartialMessageable, Member, User, TextChannel, Thread, VoiceChannel, DMChannel, GroupChannel
+#        fetch_message
+#        history
+#        pins
+#        send
+#     Widget, Client
+#         fetch_invite
+#     PartialMessage, WebhookMessage, Message
+#        add_reaction
+#        clear_reaction
+#        clear_reactions
+#        create_thread
+#        delete
+#        edit
+#        fetch
+#        pin
+#        publish
+#        remove_reaction
+#        reply
+#        unpin
+#     GuildChannel, TextChannel, ForumChannel, VoiceChannel, StageChannel, CategoryChannel
+#        clone
+#        create_invite
+#        delete
+#        invites
+#        move
+#        set_permissions
+#     Client
+#         application_info
+#         before_identify_hook
+#         change_presence
+#         close
+#         create_dm
+#         create_guild
+#         delete_invite
+#         fetch_channel
+#         fetch_guild
+#         fetch_guilds
+#         fetch_premium_sticker_packs
+#         fetch_stage_instance
+#         fetch_sticker
+#         fetch_template
+#         fetch_user
+#         fetch_webhook
+#         fetch_widget
+#         login
+#         on_error
+#         setup_hook
+#         start
+#         wait_for
+#         wait_until_ready
+#    AutoShardedClient
+#        change_presence
+#        close
+#    VoiceClient
+#        disconnect
+#        move_to
+#     VoiceProtocol
+#        disconnect
+#        on_voice_server_update
+#        on_voice_state_update
+#     Webhook (but not SyncWebhook)
+#        edit
+#        edit_message
+#        fetch
+#        fetch_message
+#        send
+#     WebhookMessage
+#        add_files
+#        remove_attachments
+#     ClientUser
+#         edit
+#     User
+#        create_dm
+#     Attachment, Asset
+#        read
+#        save
+#        to_file
+#     Message
+#        add_files
+#        remove_attachments
+#     Reaction
+#        clear
+#        remove
+#        users
+#     CategoryChannel, Guild
+#        create_forum
+#        create_stage_channel
+#        create_text_channel
+#        create_voice_channel
+#        edit
+#     Guild
+#        active_threads
+#        audit_logs
+#        ban
+#        bans
+#        change_voice_state
+#        chunk
+#        create_automod_rule
+#        create_category
+#        create_category_channel
+#        create_custom_emoji
+#        create_integration
+#        create_role
+#        create_scheduled_event
+#        create_sticker
+#        create_template
+#        delete
+#        delete_emoji
+#        delete_sticker
+#        edit_role_positions
+#        edit_welcome_screen
+#        edit_widget
+#        estimate_pruned_members
+#        fetch_automod_rule
+#        fetch_automod_rules
+#        fetch_ban
+#        fetch_channel
+#        fetch_channels
+#        fetch_emoji
+#        fetch_emojis
+#        fetch_member
+#        fetch_members
+#        fetch_roles
+#        fetch_scheduled_event
+#        fetch_scheduled_events
+#        fetch_sticker
+#        fetch_stickers
+#        integrations
+#        invites
+#        kick
+#        leave
+#        prune_members
+#        query_members
+#        templates
+#        unban
+#        vanity_invite
+#        webhooks
+#        welcome_screen
+#        widget
+#    ScheduledEvent
+#        cancel
+#        delete
+#        edit
+#        end
+#        start
+#        users
+#     Member
+#        add_roles
+#        ban
+#        create_dm
+#        edit
+#        kick
+#        move_to
+#        remove_roles
+#        request_to_speak
+#        timeout
+#        typing
+#     PartialEmoji, Emoji
+#        read
+#        save
+#        to_file
+#     Emoji, Role
+#        delete
+#        edit
+#    ForumChannel, TextChannel
+#        create_thread
+#        create_webhook
+#        edit
+#        webhooks
+#     TextChannel
+#        archived_threads
+#        delete_messages
+#        follow
+#        purge
+#     Thread
+#        add_user
+#        delete
+#        delete_messages
+#        edit
+#        fetch_member
+#        fetch_members
+#        join
+#        leave
+#        purge
+#        remove_user
+#     VoiceChannel
+#        connect
+#        create_webhook
+#        delete_messages
+#        edit
+#        purge
+#        webhooks
+#     StageChannel
+#        connect
+#        create_instance
+#        edit
+#        fetch_instance
+#     WelcomeScreen
+#         edit
+#     StageInstance, GuildSticker
+#        delete
+#        edit
+#     GroupChannel
+#        leave
+#     Invite
+#         delete
+#     Template
+#        create_guild
+#        delete
+#        edit
+#        sync
+#     StickerItem
+#         fetch
+#     StandardSticker
+#         pack
+#     ShardInfo
+#        connect
+#        disconnect
+#        reconnect
+
 import json
+import re
 import sys
 import os
 import html
@@ -72,6 +295,8 @@ if discord.__version__[0] >= "2":
     MAX_EMBEDS = 10
 
 MAX_CHARACTERS = 2000
+MAX_EMBED_CHARACTERS = 4096
+MAX_TOTAL_EMBEDS_CHARACTERS = 6000 # https://discord.com/developers/docs/resources/channel#embed-object-embed-limits
 
 THROTTLE = True
 THROTTLE_TIME_SECONDS = 0.1
@@ -114,8 +339,8 @@ def get_basename(file_path):
 def get_filename(file_path):
     return get_basename(os.path.splitext(file_path)[0])
 
-
-async def parse_slack_directory(file_path, force_all=False):
+# async
+def parse_slack_directory(file_path, force_all=False):
     """
     Parses the path to find important root-files and relevant .json logs, and stores them in a dict of the form:\n
     {
@@ -174,38 +399,24 @@ async def parse_slack_directory(file_path, force_all=False):
                 return None
 
     # Assert existence of root-files, querying user to ignore errors
-    print("[INFO] Checking for slack-root files")
-    for f, descr in slack_root_files.items():
-        f_path = os.path.join(root, f)
-        if os.path.exists(f_path):
-            print(f"[INFO] Successfully located file: {f}")
-            slack_dir["root_files"][get_filename(f)] = f_path
-        else:
-            print(f"[ERROR] Unable to locate slack-file: {f}")
-            print(f"        Description: {descr}")
-            query = input("\nDo you want to ignore and continue? (Y/N): ")
-            if query.lower() in ["y", "yes"]:
-                print(f"[OK] User ignored missing file.")
+    for ft, ft_files in {"slack": slack_root_files, "user-created": user_root_files}.items():
+        print("[INFO] Checking for {ft} files")
+        if ft == "user-created":
+            print("       Note: User is expected to manually create and fill these files if their functionality is desired.")
+        for f, descr in ft_files.items():
+            f_path = os.path.join(root, f)
+            if os.path.exists(f_path):
+                print(f"[INFO] Successfully located {ft} file: {f}")
+                slack_dir["root_files"][get_filename(f)] = f_path
             else:
-                print(f"[ERROR] User aborted at missing file: {f}")
-                return None
-    
-    print("[INFO] Checking for *user-created* slack-root files")
-    print("       Note: User is expected to manually create and fill these files if their functionality is desired.")
-    for f, descr in user_root_files.items():
-        f_path = os.path.join(root, f)
-        if os.path.exists(f_path):
-            print(f"[INFO] Successfully located user-created file: {f}")
-            slack_dir["root_files"][get_filename(f)] = f_path
-        else:
-            print(f"[ERROR] Unable to locate user-created file: {f}")
-            print(f"        Description: {descr}")
-            query = input("\nDo you want to ignore and continue? (Y/N): ")
-            if query.lower() in ["y", "yes"]:
-                print(f"[INFO] User ignored missing file.")
-            else:
-                print(f"[ERROR] User aborted at missing file: {f}")
-                return None
+                print(f"[ERROR] Unable to locate {ft} file: {f}")
+                print(f"        Description: {descr}")
+                query = input("\nDo you want to ignore and continue? (Y/N): ")
+                if query.lower() in ["y", "yes"]:
+                    print(f"[OK] User ignored missing {ft} file.")
+                else:
+                    print(f"[ERROR] User aborted at missing {ft} file: {f}")
+                    return None
     
     # locate .json logs
     print(f"[INFO] Attempting to locate relevant .json logs")
@@ -234,7 +445,7 @@ async def parse_slack_directory(file_path, force_all=False):
         return None
     else:
         print(f"[INFO] Success! {len(slack_dir['history'])} .json logs loaded")
-        if not all([f in slack_dir["root_files"] for f in root_files]):
+        if not all([get_filename(f) in slack_dir["root_files"] for f in root_files]):
             print(f"[WARNING] Missing important .json files: {({f: ('exists' if get_filename(f) in slack_dir['root_files'] else 'missing') for f in root_files})}")
 
     return slack_dir
@@ -334,7 +545,8 @@ def get_channel_names(slack_dir):
 def process_link(match_obj):
     return f"[{match_obj.group(1)}]({match_obj.group(2)})"
 
-async def fill_references(ctx, message, users, slack2discord_users, channels):
+# async
+def fill_references(ctx, message, users, slack2discord_users, channels, messages):
     """
     Fills in @mentions and #channels with their known display names
     :param message: Raw message to be filled with usernames and channel names instead of IDs
@@ -375,7 +587,7 @@ async def fill_references(ctx, message, users, slack2discord_users, channels):
                 new_str = f"#{name}"
                 channel = discord.utils.get(ctx.guild.channels, name=name)
                 if channel:
-                    new_str = f"<#{channel.id}>" # CHANGED
+                    new_str = f"<#{channel.id}>"
                 else:
                     print(f"[ERROR] Channel not found on discord: {name}")
                     print(f"        #channel references of channel will not be translated to discord-equivalent")
@@ -405,10 +617,10 @@ def parse_important_files(slack_dir):
         print(f"[INFO] channels.json found - attempting to fill #channel references")
     else:
         print(f"[WARNING] No channels.json found - #channel references will contain their IDs instead of names")
-    
+
     return users, slack2discord_users, channels
 
-
+# async because of guild.create_text_channel
 async def get_or_create_channel(ctx, name):
     channel = discord.utils.get(ctx.guild.channels, name=name, type=discord.ChannelType.text)
     if not channel:
@@ -466,12 +678,14 @@ def parse_user(ctx, message, users, slack2discord_users):
     return mention
 
 
-def parse_text(message, username):
+def parse_text(ctx, message, username, users, slack2discord_users, channels, messages):
     text = message.get('text')
     if text:
         timestamp = parse_timestamp(message)
+        text = fill_references(ctx, text, users, slack2discord_users, channels, messages)
         return f"*{timestamp}* **{username}**: {text}"
-    return None
+    else:
+        return None
 
 import io
 import requests
@@ -650,7 +864,7 @@ def parse_files(message):
     return files, embeds
 
 
-def parse_message(ctx, message, users, slack2discord_users):
+def parse_message(ctx, message, users, slack2discord_users, channels, messages):
     msg = None
     files = None
     embeds = None
@@ -667,7 +881,7 @@ def parse_message(ctx, message, users, slack2discord_users):
     username = parse_user(ctx, message, users, slack2discord_users)
     
     if "text" in message:
-        msg = parse_text(message, username)
+        msg = parse_text(ctx, message, username, users, slack2discord_users, channels, messages)
     
     if "files" in message:
         files, embeds = parse_files(message)
@@ -683,19 +897,30 @@ def parse_message(ctx, message, users, slack2discord_users):
         #     message = re.sub(r'<((?:http|ftp|https)://[\w_-]+(?:\.[\w_-]+)+[\w.,@?^=%&:/~+#-]*[\w@?^=%&/~+#-])\|(.*)>', "[\1](\2)", message)
         msg_hyperlinked = re.sub(r'<(https?:[^|>]+)>', r"[\1](\1)", msg)
         msg_hyperlinked = re.sub(r'<(https?:[^|>]+)\|([^>]+)>', r"[\2](\1)", msg_hyperlinked)
-        if msg != msg_hyperlinked:
-            rich_embed = discord.Embed(
-                type="rich",
-                description=msg_hyperlinked #,
-#                timestamp=datetime.fromtimestamp(file["timestamp"])
-            )
-            if not embeds:
-                embeds = []
-            embeds.append(rich_embed)
-            msg = ":"
+        # FIXME: check MAX_TOTAL_EMBEDS_CHARACTERS and break up into separate messages if over 6000 char limit
+        if (msg != msg_hyperlinked) or (len(msg_hyperlinked) > MAX_CHARACTERS):
+            msg = msg_hyperlinked
+            while msg and (len(msg) > 0):
+                if len(msg) > MAX_EMBED_CHARACTERS:
+                    excerpt = msg[:MAX_EMBED_CHARACTERS]
+                    newline = excerpt.rfind('\n')
+                    excerpt = msg[:newline]
+                    next_msg = msg[newline:] # tail
+                else:
+                    excerpt = msg
+                    next_msg = None
+                rich_embed = discord.Embed(
+                    type="rich",
+                    description=excerpt #,
+    #                timestamp=datetime.fromtimestamp(file["timestamp"])
+    # TODO: see also url, title, type=(article, link, video); set_image, set_footer, set_thumbnail, set_author; video, provider
+                )
+                embeds = embeds or []
+                embeds.append(rich_embed)
+                msg = next_msg
 
     # Create message-header for pure attachments
-    if files and not msg:
+    if files and not msg and not embeds:
         timestamp = parse_timestamp(message)
         
         msg = f"*{timestamp}* **{username}**: *Attachments:*"
@@ -708,25 +933,33 @@ def parse_message(ctx, message, users, slack2discord_users):
 
     return msg_id, msg, files, embeds, thread
 
-import re
+# async because it uses ctx.send() which outputs a coroutine
 async def send_message(ctx, msg, ref=None, embeds=None, files=None, allowed_mentions=None):
-    if not msg:
+    if not msg and not files and not embeds:
         print(f"[DEBUG] Why are you here? - Skipping empty message")
         return None
+    # this is using TextChannel.send https://discordpy.readthedocs.io/en/stable/api.html#discord.TextChannel.send
+    # FIXME: use:
+    # nonce (int) – The nonce to use for sending this message. If the message was successfully sent, then the message will have a nonce with this value.
+    # reference (Union[Message, MessageReference, PartialMessage]) – A reference to the Message to which you are replying, this can be created using to_reference() or passed directly as a Message. You can control whether this mentions the author of the referenced message using the replied_user attribute of allowed_mentions or by setting mention_author.
+    # ? view (discord.ui.View) – A Discord UI View to add to the message.
     
     first_ref = None
     last_ref = None
     # Split and send message *until* the remainder is within the limit, with references
-    bot_prefix = "*continuation:*\n"
-    while len(msg) > MAX_CHARACTERS:
-        excerpt = msg[:MAX_CHARACTERS]
-        newline = excerpt.rfind('\n')
-        excerpt = msg[:newline]
-        ref = await ctx.send(excerpt, reference=ref, allowed_mentions = allowed_mentions)
-        first_ref = first_ref or ref
-        msg = bot_prefix+msg[newline:] # tail
-        if THROTTLE:
-            time.sleep(THROTTLE_TIME_SECONDS)
+    # FIXME: move this to parse_message and have it return multiple items
+#    bot_prefix = "*continuation:*\n"
+
+#    if msg:
+#        while len(msg) > MAX_CHARACTERS:
+#            excerpt = msg[:MAX_CHARACTERS]
+#            newline = excerpt.rfind('\n')
+#            excerpt = msg[:newline]
+#            ref = await ctx.send(excerpt, reference=ref, allowed_mentions = allowed_mentions)
+#            first_ref = first_ref or ref
+#            msg = bot_prefix+msg[newline:] # tail
+#            if THROTTLE:
+#                time.sleep(THROTTLE_TIME_SECONDS)
 
     # Send the remainder, with any embeds attached
     if not embeds and not files:
@@ -735,6 +968,7 @@ async def send_message(ctx, msg, ref=None, embeds=None, files=None, allowed_ment
         if THROTTLE:
             time.sleep(THROTTLE_TIME_SECONDS)
     else:
+        # FIXME: actually do the embed/file splitting
         if embeds and (len(embeds) > MAX_EMBEDS):
             print(f"[INFO] Message contains over {MAX_EMBEDS} embeds.")
             print(f"       They will be split into multiple messages,")
@@ -764,13 +998,13 @@ async def send_message(ctx, msg, ref=None, embeds=None, files=None, allowed_ment
 
     return first_ref
 
-
-async def import_files(ctx, fs, users, slack2discord_users, channels):
-    # # dict mapping slack msg-id -> discord message for migrating replies.
-    # # Appears slack does not have replies, so this dict is useless.
+# async because it uses send_message which uses ctx.send() which outputs a coroutine
+async def import_files(ctx, fs, users, slack2discord_users, channels, messages={}):
+    # dict mapping slack msg-id -> discord message for migrating replies.
     # messages = {}
     # dict mapping slack thread_timestamp -> discord thread
     #  If discord.py < 2.0 this is instead used to reference thread-owner
+    # TODO: extract from or store with messages if present
     threads = {}
     for json_file in sorted(fs):
         print(f"[INFO] Parsing file: {json_file}")
@@ -778,7 +1012,7 @@ async def import_files(ctx, fs, users, slack2discord_users, channels):
             with open(json_file, encoding="utf-8") as f:
                 for message in json.load(f):
                     print(f"[INFO] Parsing message:")
-                    parsed = parse_message(ctx, message, users, slack2discord_users)
+                    parsed = parse_message(ctx, message, users, slack2discord_users, channels, messages)
                     if parsed:
                         msg_id, msg, files, embeds, thread_ts = parsed
 
@@ -787,7 +1021,6 @@ async def import_files(ctx, fs, users, slack2discord_users, channels):
                             thread_owner = None
                             if not msg_id:
                                 print(f"[WARNING] No message-id found - will be unlinkable")
-                            msg = await fill_references(ctx, msg, users, slack2discord_users, channels)
                             print(f"[INFO] Importing message: '{msg}'")
                             if thread_ts:
                                 # Prefix to clarify message owns/belongs to thread
@@ -806,7 +1039,7 @@ async def import_files(ctx, fs, users, slack2discord_users, channels):
 
                             disable_notifications = discord.AllowedMentions.none()
                             message = await send_message(context, msg, ref=thread_owner, embeds=embeds if embeds else None, files=files if files else None, allowed_mentions = disable_notifications)
-                            # messages[msg_id] = message
+                            messages[msg_id] = message
 
                             if thread_ts:
                                 if not thread_ts in threads:
@@ -832,9 +1065,10 @@ async def import_files(ctx, fs, users, slack2discord_users, channels):
         except json.JSONDecodeError as e:
             print(f"[ERROR] Unable to load json-file, skipping.\n  JSONDecodeError: {e}")
         print(f"") # extra empty line
-    # return messages
+    return messages
 
-async def import_slack_directory(ctx, path, slack_dir, match_channel=True):
+# async ecause it uses import_files which uses send_messages which uses ctx.send which outputs a coroutine
+async def import_slack_directory(ctx, path, slack_dir, match_channel=True, messages={}):
     if not ctx:
         print(f"[ERROR] Import aborted - No context was given!")
     if not slack_dir:
@@ -854,11 +1088,12 @@ async def import_slack_directory(ctx, path, slack_dir, match_channel=True):
             print(f"[INFO] Importing channel: {ch}")
             if match_channel == True:
                 ctx = await get_or_create_channel(ctx, ch)
-            await import_files(ctx, fs, users, slack2discord_users, channels)
+            messages = await import_files(ctx, fs, users, slack2discord_users, channels)
             print(f"[INFO] Completed importing channel: {ch}")
         print(f"[INFO] Import complete")
 
 
+# Command callbacks must be coroutines (i.e. async)
 def register_commands():
     @bot.command(pass_context=True)
     async def import_all(ctx, *kwpath):
@@ -875,9 +1110,9 @@ def register_commands():
         paths = list(kwpath)
         path = paths[0]
         print(f"[INFO] Attempting to import '{path}' to server '#{ctx.message.guild.name}'")
-        slack_dir = await parse_slack_directory(path, force_all=True)
-        
-        await import_slack_directory(ctx, path, slack_dir)
+        # await
+        slack_dir = parse_slack_directory(path, force_all=True)
+        messages = await import_slack_directory(ctx, path, slack_dir, messages={})
 
     @bot.command(pass_context=True)
     async def import_path(ctx, *kwpath):
@@ -894,17 +1129,18 @@ def register_commands():
         paths = list(kwpath)
         
         print(f"[INFO] Attempting to import '{paths}' to server '#{ctx.message.guild.name}'")
-        slack_dir = await parse_slack_directory(paths[0])
+        # await
+        slack_dir = parse_slack_directory(paths[0])
         if not slack_dir:
             print(f"[ERROR] Failed to parse slack directory")
             return
 
         for path in paths[1:]:
-            slack_dir_2 = await parse_slack_directory(path)
+            # await
+            slack_dir_2 = parse_slack_directory(path)
             for k, v in slack_dir_2["history"].items():
                 slack_dir["history"][k] = slack_dir["history"].get(k,[]) + v
-            
-        await import_slack_directory(ctx, slack_dir["root"], slack_dir)
+        messages = await import_slack_directory(ctx, slack_dir["root"], slack_dir, messages={})
 
     @bot.command(pass_context=True)
     async def import_here(ctx, *kwpath):
@@ -919,8 +1155,9 @@ def register_commands():
         paths = list(kwpath)
         for path in paths:
             print(f"[INFO] Attempting to import '{path}' to channel '#{ctx.message.channel.name}'")
-            slack_dir = await parse_slack_directory(path)
-            await import_slack_directory(ctx, path, slack_dir, match_channel=False)
+            # await
+            slack_dir = parse_slack_directory(path)
+            messages = await import_slack_directory(ctx, path, slack_dir, match_channel=False, messages={})
 
 
 if __name__ == "__main__":
@@ -952,5 +1189,5 @@ if __name__ == "__main__":
         intents.message_content = True
     bot = commands.Bot(command_prefix="!", intents=intents)
     register_commands()
-    bot.run(token)
+    bot.run(token, reconnect=True)
 
