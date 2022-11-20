@@ -880,16 +880,17 @@ if __name__ == "__main__":
     check_optional_dependencies()
     token = ""
     for path in [f'{os.path.expanduser("~")}/.secrets/discord_token.txt', 'discord_token.txt']:
-        if os.path.isfile( path ):
-            with open(path, "r") as f:
-                for line in f:
-                    token = line.strip()
-            if token == "":
-                print(f"Found {path} but it's empty")
+        if token = "":
+            if os.path.isfile( path ):
+                with open(path, "r") as f:
+                    for line in f:
+                        token = line.strip()
+                if token == "":
+                    print(f"Found {path} but it's empty")
+                else:
+                    print(f"Loaded token from {path}")
             else:
-                print(f"Loaded token from {path}")
-        else:
-            print(f"Couldn't find {path}")
+                print(f"Couldn't find {path}")
 
     if token == "":
         input("Enter bot token: ")
