@@ -7,8 +7,54 @@
 # or referencing channels not created yet.
 # Also note that mentions will only be properly migrated for users already on the discord server.
 # To fascilitate the fact that people use different nicks, there is a slack2discord.json file where you can map those (if no mapping exists, it just attempts to match name).
-# TODO Properly migrate the assets to discord, rather than embedded url's
-# TODO Post messages looking like the mapped user (webhooks? send() can specify username there)
+# TODO 
+#     Post messages looking like the mapped user (webhooks? send() can specify username there)
+#     user correlation
+#         Add example json file to repo
+#             check repo directory for it
+#         Use Slack ID rather than name to correlate - Slack ID U... is unique, match to Discord long number (not nick#discriminator); see parse_user()
+#             Allow mention of people not in same server - discord long ID should work, dunno if discord nick#discriminator can be looked up if they're not on the server
+#             Allow bot to propose inviting mapped people?
+#         Try using each Slack name to correlate
+#         Add command to correlate slack ID to discord mention, edit prior messages to match
+#             Get OAuth permission for the user so it can be edited to actually be from them
+#         First enumerate all Slack users in import and get import command executor to confirm or change the Discord handle mapping
+#     channel correlation
+#         Support different names for channels and Discord's category structure
+#     replies & threads
+#         Transfer replies as replies
+#         Name threads better
+#         Support Slack's RT of previous messages (both within and between channels) & 'crosspost thread message to channel' - maybe as reply (though that merges), maybe as link to discord message, maybe embed…?
+#             Discord doesn't seem to support "reply to message in different channel" https://discord.com/developers/docs/resources/channel#message-reference-object-message-reference-structure
+#             Track & save correlation of discord message ID <-> slack message ID so it can be referenced
+#                 on re-imports just edit previous message if it exists
+#         Translate Slack URLs (for same server)
+#     Slack edited messages
+#         check if this is supported / translated
+#     attachments & embeds
+#         Break up embeds too (character limit 4096)
+#             try to cut at paragraph or line break (or at least at word break, not within a link/word/etc)
+#         If embed is for a file, file has to go on the same message as its embed
+#             see e.g. first send() command within send_message()
+#         Allow null message when converting whole thing to rich text embed
+#         Use embeds to reduce # of segments (message is just 2000)
+#         Convert username to mention in embeds; see parse_text() and parse_messages()
+#             Move fill_references() to be part of parse_text(), not in core loop
+#         Add embeds for URLs
+#             If URL is external image location, use image embed type and maybe just reupload image
+#             If multiple URLs in a message, maybe multiple embeds (for preview cards)?
+#     other message support
+#         bot messages
+#         join/part messages
+#         emotes?
+#             check if Slack has markup for this
+#         use Slack's "blocks" rather than its textdump?
+#             would require enumerating all the types
+#             but no regex issues
+#             could more easily determine where to split the message if needed
+#         is it possible to backdate messages?
+#             AFAICT no but should check API more
+
 import json
 import sys
 import os
