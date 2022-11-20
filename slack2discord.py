@@ -242,7 +242,7 @@ def get_slack2discord_user_mapping(slack_dir):
                 slack_name = user["slack"]["name"]
                 discord_name = user["discord"]["name"]
                 if user["discord"]["id"]:
-                    discord_name = discord_name + f'#${user["discord"]["id"]}'
+                    discord_name = discord_name + f'#{user["discord"]["id"]}'
                 slack2discord_users[slack_name] = discord_name
                 print(f"\tslack2discord user mapping: {slack_name} -> {discord_name}")
     except OSError as e:
@@ -281,6 +281,9 @@ def get_channel_names(slack_dir):
         print(f"[ERROR] Unable to load channels.json.\n  JSONDecodeError: {e}")
     return channels
 
+def process_link(match_obj):
+    return f"[{match_obj.group(1)}]({match_obj.group(2)})"
+
 async def fill_references(ctx, message, users, slack2discord_users, channels):
     """
     Fills in @mentions and #channels with their known display names
@@ -289,6 +292,8 @@ async def fill_references(ctx, message, users, slack2discord_users, channels):
     :param channels: Dictionary of channel_id => channel_name pairs
     :return: Filled message string
     """
+
+
     if users:
         for uid, slack_name in users.items():
             old_str = f"<@{uid}>"
@@ -311,21 +316,22 @@ async def fill_references(ctx, message, users, slack2discord_users, channels):
                     else:
                         print(f"[ERROR] User not found on discord: {slack_name}")
                         print(f"        @mentions of user will contain their ID instead of display name")
-                
+
                 message = message.replace(old_str, new_str)
     if channels:
         for cid, name in channels.items():
-            old_str = f"<#{cid}>"
+            old_str = f"<#{cid}|{name}>"
             if old_str in message:
                 new_str = f"#{name}"
                 channel = discord.utils.get(ctx.guild.channels, name=name)
                 if channel:
-                    new_str = f"{channel.mention}"
+                    new_str = f"<#{channel.id}>" # CHANGED
                 else:
                     print(f"[ERROR] Channel not found on discord: {name}")
                     print(f"        #channel references of channel will not be translated to discord-equivalent")
 
                 message = message.replace(old_str, new_str)
+
     return message
 
 
@@ -364,20 +370,25 @@ async def get_or_create_channel(ctx, name):
 
 def parse_timestamp(message):
     if 'ts' in message:
-        return datetime.fromtimestamp(float(message['ts'])).strftime('%d/%m/%Y at %H:%M:%S')
+        return datetime.fromtimestamp(float(message['ts'])).strftime('%Y-%m-%d at %H:%M:%S')
     else:
         print(f"[WARNING] No timestamp in message")
     return '<no timestamp>'
 
 
-def parse_user(message, users):
+def parse_user(ctx, message, users, slack2discord_users):
     username = "<unknown user>"
     user = message.get('user_profile')
+    # user = 0
     if user:
         keys = ['display_name','name','real_name'] # username keys (ordered by priority)
         present_keys = [k for k in keys if user.get(k)] # `k in user` would accept empty fields
-        if present_keys:
-            username = user[present_keys[0]]
+        if present_keys: # FIXME: should iterate over present_keys
+            display_name = user[present_keys[0]]
+            for slack_name in slack2discord_users:
+                if display_name == slack_name:
+                    username = slack2discord_users[slack_name]
+            #username = user[present_keys[0]]
         else:
             print(f"[ERROR] Unable to parse user: {user}")
     else:
@@ -385,52 +396,214 @@ def parse_user(message, users):
         print(f"[FIX] Attempting 'user' field for uid")
         if "user" in message:
             print(f"[INFO] Located 'user' field, attempting to map uid to username")
-            username = message['user']
-            if users and username in users:
-                username = users[username]
+            uid = message['user']
+            if users and uid in users:
+                display_name = users[uid]
+                for slack_name in slack2discord_users:
+                    if display_name == slack_name:
+                        username = slack2discord_users[slack_name]
             else:
                 print(f"[WARNING] Failed to map uid to slack username - name will remain the unmapped uid: {username}")
         else:
             print(f"[ERROR] No 'user' field in message - defaulting to '<unknown user>'")
-    return username
+
+    discord_user = ctx.guild.get_member_named(username)
+    if discord_user:
+        mention = f"{discord_user.mention}"
+    else:
+        mention = f"@{username}"
+
+    return mention
 
 
 def parse_text(message, username):
     text = message.get('text')
     if text:
         timestamp = parse_timestamp(message)
-        return f"**{username}** *({timestamp})*\n{text}"
+        return f"*{timestamp}* **{username}**: {text}"
     return None
 
-
+import io
+import requests
 def parse_files(message):
+    # using mapping from https://developer.mozilla.org/en-US/docs/Web/HTTP/Basics_of_HTTP/MIME_types/Common_types
+    # because mimetypes.guess_extension returns silly results https://stackoverflow.com/questions/53541343/content-type-text-plain-has-file-extension-ksh
+    # within embeds, Discord only supports .gif .jpeg .jpg .json (Lottie) .png .webp images https://discord.com/developers/docs/reference#image-formatting-image-formats
+    extensions = {
+        "audio/aac": ".aac",
+        "application/x-abiword": ".abw",
+        "application/x-freearc": ".arc",
+        "image/avif": ".avif",
+        "video/x-msvideo": ".avi",
+        "application/vnd.amazon.ebook": ".azw",
+        "application/octet-stream": ".bin",
+        "image/bmp": ".bmp",
+        "application/x-bzip": ".bz",
+        "application/x-bzip2": ".bz2",
+        "application/x-cdf": ".cda",
+        "application/x-csh": ".csh",
+        "text/css": ".css",
+        "text/csv": ".csv",
+        "application/msword": ".doc",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+        "application/vnd.ms-fontobject": ".eot",
+        "application/epub+zip": ".epub",
+        "application/gzip": ".gz",
+        "image/gif": ".gif",
+        "text/html": ".html",
+        "image/vnd.microsoft.icon": ".ico",
+        "text/calendar": ".ics",
+        "application/java-archive": ".jar",
+        "image/jpeg": ".jpg",
+        "text/javascript": ".js",
+        "application/json": ".json",
+        "application/ld+json": ".jsonld",
+        "audio/midi audio/x-midi": ".midi",
+        "text/javascript": ".mjs",
+        "audio/mpeg": ".mp3",
+        "video/mp4": ".mp4",
+        "video/mpeg": ".mpeg",
+        "application/vnd.apple.installer+xml": ".mpkg",
+        "application/vnd.oasis.opendocument.presentation": ".odp",
+        "application/vnd.oasis.opendocument.spreadsheet": ".ods",
+        "application/vnd.oasis.opendocument.text": ".odt",
+        "audio/ogg": ".oga",
+        "video/ogg": ".ogv",
+        "application/ogg": ".ogx",
+        "audio/opus": ".opus",
+        "font/otf": ".otf",
+        "image/png": ".png",
+        "application/pdf": ".pdf",
+        "application/x-httpd-php": ".php",
+        "application/vnd.ms-powerpoint": ".ppt",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation": ".pptx",
+        "application/vnd.rar": ".rar",
+        "application/rtf": ".rtf",
+        "application/x-sh": ".sh",
+        "image/svg+xml": ".svg",
+        "application/x-tar": ".tar",
+        "image/tiff": ".tiff",
+        "video/mp2t": ".ts",
+        "font/ttf": ".ttf",
+        "text/plain": ".txt",
+        "application/vnd.visio": ".vsd",
+        "audio/wav": ".wav",
+        "audio/webm": ".weba",
+        "video/webm": ".webm",
+        "image/webp": ".webp",
+        "font/woff": ".woff",
+        "font/woff2": ".woff2",
+        "application/xhtml+xml": ".xhtml",
+        "application/vnd.ms-excel": ".xls",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+        "application/xml": ".xml",
+        "text/xml": ".xml",
+        "application/atom+xml": ".xml",
+        "application/vnd.mozilla.xul+xml": ".xul",
+        "application/zip": ".zip",
+        "video/3gpp": ".3gp",
+        "audio/3gpp": ".3gp",
+        "video/3gpp2": ".3gp",
+        "audio/3gpp2": ".3g2",
+        "application/x-7z-compressed": ".7z"
+    }
+    # Slack files have params in the format:
+    #  {
+    #    "id": "F01A2BCDEFG",
+    #    "created": 1659116022,
+    #    "timestamp": 1659116022,
+    #    "name": "Something.jpg",
+    #    "title": "Something",
+    #    "mimetype": "image/jpeg",
+    #    "filetype": "jpg",
+    #    "pretty_type": "JPEG",
+    #    "user": "U02A4BCDEF5",
+    #    "user_team": "T012A3B4CDE",
+    #    "editable": false,
+    #    "size": 15005,
+    #    "mode": "hosted",
+    #    "is_external": false,
+    #    "external_type": "",
+    #    "is_public": true,
+    #    "public_url_shared": false,
+    #    "display_as_bot": false,
+    #    "username": "",
+    #    "url_private": "https://files.slack.com/files-pri/T012A3B4CDE-F01A2BCDEFG/something.jpg?t=xoxe-1234567890123-2345678901234-3456789012345-0a1b2c3d4f5a6b7c8d9e0f1a2b3c4d5e",
+    #    "url_private_download": "https://files.slack.com/files-pri/T012A3B4CDE-F01A2BCDEFG/download/image_from_ios.jpg?t=xoxe-1234567890123-2345678901234-3456789012345-0a1b2c3d4f5a6b7c8d9e0f1a2b3c4d5e",
+    #    "media_display_type": "unknown",
+    #    "thumb_64": "https://files.slack.com/files-tmb/T012A3B4CDE-F01A2BCDEFG-0a2b4c6d7e/image_from_ios_64.jpg?t=xoxe-1234567890123-2345678901234-3456789012345-0a1b2c3d4f5a6b7c8d9e0f1a2b3c4d5e",
+    #    "thumb_80": "https://files.slack.com/files-tmb/T012A3B4CDE-F01A2BCDEFG-0a2b4c6d7e/image_from_ios_80.jpg?t=xoxe-1234567890123-2345678901234-3456789012345-0a1b2c3d4f5a6b7c8d9e0f1a2b3c4d5e",
+    #    "thumb_360": "https://files.slack.com/files-tmb/T012A3B4CDE-F01A2BCDEFG-0a2b4c6d7e/image_from_ios_360.jpg?t=xoxe-1234567890123-2345678901234-3456789012345-0a1b2c3d4f5a6b7c8d9e0f1a2b3c4d5e",
+    #    "thumb_360_w": 360,
+    #    "thumb_360_h": 164,
+    #    "thumb_480": "https://files.slack.com/files-tmb/T012A3B4CDE-F01A2BCDEFG-0a2b4c6d7e/image_from_ios_480.jpg?t=xoxe-1234567890123-2345678901234-3456789012345-0a1b2c3d4f5a6b7c8d9e0f1a2b3c4d5e",
+    #    "thumb_480_w": 480,
+    #    "thumb_480_h": 218,
+    #    "thumb_160": "https://files.slack.com/files-tmb/T012A3B4CDE-F01A2BCDEFG-0a2b4c6d7e/image_from_ios_160.jpg?t=xoxe-1234567890123-2345678901234-3456789012345-0a1b2c3d4f5a6b7c8d9e0f1a2b3c4d5e",
+    #    "thumb_720": "https://files.slack.com/files-tmb/T012A3B4CDE-F01A2BCDEFG-0a2b4c6d7e/image_from_ios_720.jpg?t=xoxe-1234567890123-2345678901234-3456789012345-0a1b2c3d4f5a6b7c8d9e0f1a2b3c4d5e",
+    #    "thumb_720_w": 720,
+    #    "thumb_720_h": 328,
+    #    "thumb_800": "https://files.slack.com/files-tmb/T012A3B4CDE-F01A2BCDEFG-0a2b4c6d7e/image_from_ios_800.jpg?t=xoxe-1234567890123-2345678901234-3456789012345-0a1b2c3d4f5a6b7c8d9e0f1a2b3c4d5e",
+    #    "thumb_800_w": 800,
+    #    "thumb_800_h": 364,
+    #    "original_w": 848,
+    #    "original_h": 386,
+    #    "thumb_tiny": "AbCDEFGHIJKlmNo1p/qR23stUVxyZABC45D6e/fG7HIJk78lmnoPqrSt9UVWXYZAB+Cd0EFGHIJKL1mNOPQRSTUVw2xY+zABCD3E456F7ghiJK/LmNOPqrS8tuVW9xyZ0abcde1FgHi23J4j/KlM/5n=",
+    #    "permalink": "https://unlws.slack.com/files/U02A4BCDEF5/F01A2BCDEFG/something.jpg",
+    #    "permalink_public": "https://slack-files.com/T012A3B4CDE-F01A2BCDEFG-0abcd1e2fg",
+    #    "is_starred": false,
+    #    "has_rich_preview": false,
+    #    "file_access": "visible"
+    #  }
+
     files = []
+    embeds = []
     for file in message["files"]:
         if "url_private" in file:
-            file = {
-                "colour": None,
-                "title": file["title"],
-                "type": file["mimetype"].split('/')[0],
-                "url": file["url_private"],
-                "description": None,
-                "timestamp": datetime.fromtimestamp(file["timestamp"]),
-            }
-            files.append({k:v for k,v in file.items() if v is not None})
-            print(f"[INFO] Attached file: {file['title']}")
+            response = requests.get(file["url_private"])
+            content = io.BytesIO(response.content)
+            extension = file["filetype"]
+            filename = file["name"]
+            if not filename.endswith(extension):
+                filename = f'{filename}{extension}'
+            discord_file = discord.File(content, filename)
+
+            if file["mimetype"].split('/')[0] == "image":
+                # https://discordpy.readthedocs.io/en/stable/api.html#embed
+                discord_embed = discord.Embed(
+#                   colour=None,
+                    title=file["title"],
+                    type="image", # rich, image, video, gifv, article, link https://discord.com/developers/docs/resources/channel#embed-object-embed-types
+#                    url=f'attachment://{filename}', # file["url_private"],
+#                   description=None,
+                    timestamp=datetime.fromtimestamp(file["timestamp"]),
+                )
+                discord_embed.set_image(url=f'attachment://{filename}') # e.url
+                embeds.append(discord_embed)
+                files.append(discord_file)
+                print(f"[INFO] Embedded file: {file['title']}")
+            else:
+                files.append(discord_file)
+                print(f"[INFO] Attached file: {file['title']}")
+
         else:
             print(f"[ERROR] File has no 'url_private' field - Unable to migrate file: {file}")
-    files = [discord.Embed(**f) for f in files]
-    files = [e.set_image(url=e.url) for e in files]
-    
+#    files = [discord.Embed(**f) for f in files] 
+#    files = [e.set_image(url=e.url) for e in files]
+#    files_final = []
+#    for f in files:
+#        files_final.append(discord.File(img, filename))
+
     if not "user" in message:
-        print(f"[DEBUG] files can exist without a 'user' field!!!")
-    
-    return files
+        print(f"[DEBUG] files can't exist without a 'user' field!!!")
+
+    return files, embeds
 
 
-def parse_message(message, users):
+def parse_message(ctx, message, users, slack2discord_users):
     msg = None
     files = None
+    embeds = None
 
     if message.get("subtype", None) == "channel_join":
         print(f"[INFO] Message is a 'channel_join' message")
@@ -441,30 +614,55 @@ def parse_message(message, users):
         return None
     
     msg_id = message.get("client_msg_id", None)
-    username = parse_user(message, users)
+    username = parse_user(ctx, message, users, slack2discord_users)
     
     if "text" in message:
         msg = parse_text(message, username)
     
     if "files" in message:
-        files = parse_files(message)
+        files, embeds = parse_files(message)
+
+    if msg:
+        msg = msg.replace("<!everyone>", "@everyone")
+        msg = msg.replace("&amp;", "&")
+        msg = msg.replace("&gt;", ">")
+        msg = msg.replace("&lt;", "<")
+
+
+        #message = re.sub(r'<((?:http|ftp|https)://[\w_-]+(?:\.[\w_-]+)+[\w.,@?^=%&:/~+#-]*[\w@?^=%&/~+#-])\|(.*)>', process_link, message)
+        # slack_link = re.search(r'<((?:http|ftp|https)://[\w_-]+(?:\.[\w_-]+)+[\w.,@?^=%&:/~+#-]*[\w@?^=%&/~+#-])\|(.*)>', message)
+        # if slack_link:
+        #     link, text = slack_link.groups()
+        #     message = re.sub(r'<((?:http|ftp|https)://[\w_-]+(?:\.[\w_-]+)+[\w.,@?^=%&:/~+#-]*[\w@?^=%&/~+#-])\|(.*)>', "[\1](\2)", message)
+        msg_hyperlinked = re.sub(r'<(https?:[^|>]+)>', r"[\1](\1)", msg)
+        msg_hyperlinked = re.sub(r'<(https?:[^|>]+)\|([^>]+)>', r"[\2](\1)", msg_hyperlinked)
+        if msg != msg_hyperlinked:
+            rich_embed = discord.Embed(
+                type="rich",
+                description=msg_hyperlinked #,
+#                timestamp=datetime.fromtimestamp(file["timestamp"])
+            )
+            if not embeds:
+                embeds = []
+            embeds.append(rich_embed)
+            msg = ":"
 
     # Create message-header for pure attachments
     if files and not msg:
         timestamp = parse_timestamp(message)
         
-        msg = f"**{username}** *({timestamp})* - *Attachments:*"
+        msg = f"*{timestamp}* **{username}**: *Attachments:*"
     
-    if not msg and not files:
+    if not msg and not files and not embeds:
         print(f"[ERROR] Failed to parse message: {message}")
         return None
 
     thread = message.get("thread_ts", None)
 
-    return msg_id, msg, files, thread
+    return msg_id, msg, files, embeds, thread
 
-
-async def send_message(ctx, msg, ref=None, embeds=None, allowed_mentions=None):
+import re
+async def send_message(ctx, msg, ref=None, embeds=None, files=None, allowed_mentions=None):
     if not msg:
         print(f"[DEBUG] Why are you here? - Skipping empty message")
         return None
@@ -474,41 +672,48 @@ async def send_message(ctx, msg, ref=None, embeds=None, allowed_mentions=None):
     # Split and send message *until* the remainder is within the limit, with references
     bot_prefix = "*continuation:*\n"
     while len(msg) > MAX_CHARACTERS:
-        ref = await ctx.send(msg[:MAX_CHARACTERS], reference=ref, allowed_mentions = allowed_mentions)
+        excerpt = msg[:MAX_CHARACTERS]
+        newline = excerpt.rfind('\n')
+        excerpt = msg[:newline]
+        ref = await ctx.send(excerpt, reference=ref, allowed_mentions = allowed_mentions)
         first_ref = first_ref or ref
-        msg = bot_prefix+msg[MAX_CHARACTERS:] # tail
+        msg = bot_prefix+msg[newline:] # tail
         if THROTTLE:
             time.sleep(THROTTLE_TIME_SECONDS)
 
     # Send the remainder, with any embeds attached
-    if not embeds:
+    if not embeds and not files:
         ref = await ctx.send(msg, reference=ref, allowed_mentions = allowed_mentions)
         first_ref = first_ref or ref
         if THROTTLE:
             time.sleep(THROTTLE_TIME_SECONDS)
     else:
-        if len(embeds) > MAX_EMBEDS:
+        if embeds and (len(embeds) > MAX_EMBEDS):
             print(f"[INFO] Message contains over {MAX_EMBEDS} embeds.")
             print(f"       They will be split into multiple messages,")
             print(f"        referencing their parent.")
-
-        if discord.__version__[0] >= "2":
-            while embeds:
-                ref = await ctx.send(msg, embeds=embeds[:MAX_EMBEDS], reference=last_ref or ref, allowed_mentions = allowed_mentions)
-                first_ref = first_ref or ref
-                last_ref = last_ref or ref
-                if THROTTLE:
-                    time.sleep(THROTTLE_TIME_SECONDS)
-                msg = "*Additional attachments:*"
-                embeds=embeds[MAX_EMBEDS:] # tail
+        if files and embeds and len(embeds) == 1 and len(files) == 1:
+            first_ref = await ctx.send(msg, file=files[0], embed=embeds[0], allowed_mentions = allowed_mentions)
         else:
-            for embed in embeds:
-                ref = await ctx.send(msg, embed=embed, reference=last_ref or ref, allowed_mentions = allowed_mentions)
-                first_ref = first_ref or ref
-                last_ref = last_ref or ref
-                if THROTTLE:
-                    time.sleep(THROTTLE_TIME_SECONDS)
-                msg = "*Additional attachments:*"
+            first_ref = await ctx.send(msg, files=files, embeds=embeds, allowed_mentions = allowed_mentions)
+
+        # if discord.__version__[0] >= "2":
+        #     while embeds:
+        #         ref = await ctx.send(msg, embeds=embeds[:MAX_EMBEDS], reference=last_ref or ref, allowed_mentions = allowed_mentions)
+        #         first_ref = first_ref or ref
+        #         last_ref = last_ref or ref
+        #         if THROTTLE:
+        #             time.sleep(THROTTLE_TIME_SECONDS)
+        #         msg = "*Additional attachments:*"
+        #         embeds=embeds[MAX_EMBEDS:] # tail
+        # else:
+        #     for embed in embeds:
+        #         ref = await ctx.send(msg, embed=embed, reference=last_ref or ref, allowed_mentions = allowed_mentions)
+        #         first_ref = first_ref or ref
+        #         last_ref = last_ref or ref
+        #         if THROTTLE:
+        #             time.sleep(THROTTLE_TIME_SECONDS)
+        #         msg = "*Additional attachments:*"
 
     return first_ref
 
@@ -526,11 +731,11 @@ async def import_files(ctx, fs, users, slack2discord_users, channels):
             with open(json_file, encoding="utf-8") as f:
                 for message in json.load(f):
                     print(f"[INFO] Parsing message:")
-                    parsed = parse_message(message, users)
+                    parsed = parse_message(ctx, message, users, slack2discord_users)
                     if parsed:
-                        msg_id, msg, files, thread_ts = parsed
+                        msg_id, msg, files, embeds, thread_ts = parsed
 
-                        if msg:
+                        if msg or embeds or files:
                             context = ctx
                             thread_owner = None
                             if not msg_id:
@@ -553,7 +758,7 @@ async def import_files(ctx, fs, users, slack2discord_users, channels):
 
 
                             disable_notifications = discord.AllowedMentions.none()
-                            message = await send_message(context, msg, ref=thread_owner, embeds=files if files else None, allowed_mentions = disable_notifications)
+                            message = await send_message(context, msg, ref=thread_owner, embeds=embeds if embeds else None, files=files if files else None, allowed_mentions = disable_notifications)
                             # messages[msg_id] = message
 
                             if thread_ts:
@@ -570,7 +775,7 @@ async def import_files(ctx, fs, users, slack2discord_users, channels):
                                     await threads[thread_ts].edit(archived=True)
                             print(f"[INFO] Message imported!")
 
-                        if not msg and not files:
+                        if not msg:
                             print(f"[ERROR] skipping message - Found neither text nor files in message: {message}")
                     else:
                         print(f"[INFO] Ignored unparsed message.")
@@ -673,10 +878,31 @@ def register_commands():
 
 if __name__ == "__main__":
     check_optional_dependencies()
+    token = ""
+    for path in [f'{os.path.expanduser("~")}/.secrets/discord_token.txt', 'discord_token.txt']:
+        if os.path.isfile( path ):
+            with open(path, "r") as f:
+                for line in f:
+                    token = line.strip()
+            if token == "":
+                print(f"Found {path} but it's empty")
+            else:
+                print(f"Loaded token from {path}")
+        else:
+            print(f"Couldn't find {path}")
+
+    if token == "":
+        input("Enter bot token: ")
+        f = open("~/.secrets/discord_token.txt", "a")
+        f.write(token)
+        f.close()
+        print("Saved token to ~/.secrets/discord_token.txt")
+
     intents = discord.Intents.default()
     intents.members = True
     if discord.__version__[0] >= "2":
         intents.message_content = True
     bot = commands.Bot(command_prefix="!", intents=intents)
     register_commands()
-    bot.run(input("Enter bot token: "))
+    bot.run(token)
+
