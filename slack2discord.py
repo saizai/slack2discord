@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 # Authors: Rocky Slavin
 #          Felix Hallqvist
+#          Yamiko Hikari
+#          Sai (@saizai)
+#
 # Slack message history importer for Discord
 # Note that some functionality won't work properly if not using the import_all command,
 # such as messages in threads created in older .json logs (created in the text channel instead),
 # or referencing channels not created yet.
 # Also note that mentions will only be properly migrated for users already on the discord server.
-# To fascilitate the fact that people use different nicks, there is a slack2discord.json file where you can map those (if no mapping exists, it just attempts to match name).
+# To facilitate the fact that people use different nicks, there is a slack2discord.json file where you can map those (if no mapping exists, it just attempts to match name).
 # TODO 
 #     Post messages looking like the mapped user (webhooks? send() can specify username there)
 #     user correlation
@@ -58,6 +61,7 @@
 import json
 import sys
 import os
+import html
 import time
 from datetime import datetime
 import discord
@@ -669,11 +673,8 @@ def parse_message(ctx, message, users, slack2discord_users):
         files, embeds = parse_files(message)
 
     if msg:
+        msg = html.unescape(msg)
         msg = msg.replace("<!everyone>", "@everyone")
-        msg = msg.replace("&amp;", "&")
-        msg = msg.replace("&gt;", ">")
-        msg = msg.replace("&lt;", "<")
-
 
         #message = re.sub(r'<((?:http|ftp|https)://[\w_-]+(?:\.[\w_-]+)+[\w.,@?^=%&:/~+#-]*[\w@?^=%&/~+#-])\|(.*)>', process_link, message)
         # slack_link = re.search(r'<((?:http|ftp|https)://[\w_-]+(?:\.[\w_-]+)+[\w.,@?^=%&:/~+#-]*[\w@?^=%&/~+#-])\|(.*)>', message)

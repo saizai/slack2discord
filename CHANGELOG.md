@@ -6,3 +6,7 @@
 * fix some HTML entities in output, e.g. &amp; etc
 
 Combination of work by Yamiko & saizai.
+
+# 2022-11-20
+* added changelog & expanded todo list
+* used python library to convert all HTML entities in message
