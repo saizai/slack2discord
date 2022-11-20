@@ -927,7 +927,7 @@ if __name__ == "__main__":
     check_optional_dependencies()
     token = ""
     for path in [f'{os.path.expanduser("~")}/.secrets/discord_token.txt', 'discord_token.txt']:
-        if token = "":
+        if token == "":
             if os.path.isfile( path ):
                 with open(path, "r") as f:
                     for line in f:
