@@ -3,6 +3,7 @@
 #          Felix Hallqvist
 #          Yamiko Hikari
 #          Sai (@saizai)
+#          Alex Fink
 #
 # Slack message history importer for Discord
 # Note that some functionality won't work properly if not using the import_all command,
@@ -15,7 +16,7 @@
 #     user correlation
 #         Add example json file to repo
 #             check repo directory for it
-#         Use Slack ID rather than name to correlate - Slack ID U... is unique, match to Discord long number (not nick#discriminator); see parse_user()
+#         Use Slack ID rather than name to correlate - Slack ID U... is unique [this part now done], match to Discord long number (not nick#discriminator); see parse_user()
 #             Allow mention of people not in same server - discord long ID should work, dunno if discord nick#discriminator can be looked up if they're not on the server
 #             Allow bot to propose inviting mapped people?
 #         Try using each Slack name to correlate
@@ -481,13 +482,16 @@ def get_display_names(slack_dir):
     return users
 
 
-def get_slack2discord_user_mapping(slack_dir):
+def get_slack2discord_user_mapping(slack_dir, users):
     """
-    Generates a dictionary of slack_user => discord_user
+    Generates a dictionary of (slack user ID) => (discord username).
+    Rewrites slack2discord_users.json with the user IDs if there are any entries
+    containing only names.
     :param slack_dir: Dict representing the slack-log directory
+    :param users: Dict from Slack user IDs to names
     :return: Dictionary or None if no file is found
     """
-    slack2discord_users = {}
+    slack2discord_uids = {}
 
     print(f"[INFO] Attempting to locate slack2discord_users.json")
     
@@ -499,19 +503,46 @@ def get_slack2discord_user_mapping(slack_dir):
     try:
         with open(file_path, encoding="utf-8") as f:
             slack2discord_users_json = json.load(f)
+            dirty = False # Should we rewrite the json?
             for user in slack2discord_users_json:
-                slack_name = user["slack"]["name"]
+                try:
+                    slack_id = user["slack"]["id"]
+                except KeyError:
+                    slack_name = user["slack"]["name"]
+                    possible_slack_ids = [id
+                        for (id,name) in users.items()
+                        if name == slack_name]
+                    if len(possible_slack_ids) == 0:
+                        print(f"[WARNING] There is no Slack user named \"{slack_name}\"")
+                        continue
+                    elif len(possible_slack_ids) == 1:
+                        slack_id = possible_slack_ids[0]
+                    else:
+                        print(f"[WARNING] There is more than one Slack user named \"{slack_name}\"")
+                        print(f"[FIX] Querying user which is the intended mapping")
+                        print(f"[ERROR] ... but that's not implemented") # TODO
+                        continue
+                    user["slack"]["id"] = slack_id
+                    dirty = True
                 discord_name = user["discord"]["name"]
                 if user["discord"]["id"]:
                     discord_name = discord_name + f'#{user["discord"]["id"]}'
-                slack2discord_users[slack_name] = discord_name
-                print(f"\tslack2discord user mapping: {slack_name} -> {discord_name}")
+                slack2discord_uids[slack_id] = discord_name
+                print(f"\tslack2discord user mapping: {slack_id} -> {discord_name}")
     except OSError as e:
         print(f"[ERROR] Unable to load slack2discord user mapping: {e}")
         return None
     except json.JSONDecodeError as e:
         print(f"[ERROR] Unable to load slack2discord_users.json.\n  JSONDecodeError: {e}")
-    return slack2discord_users
+    
+    if dirty:
+        try:
+            with open(file_path, mode="w", encoding="utf-8") as f:
+                json.dump(slack2discord_users_json, f, indent=1)
+        except OSError as e:
+            print(f"[ERROR] Unable to save modified slack2discord user mapping: {e}")
+
+    return slack2discord_uids
 
 
 def get_channel_names(slack_dir):
@@ -546,7 +577,7 @@ def process_link(match_obj):
     return f"[{match_obj.group(1)}]({match_obj.group(2)})"
 
 # async
-def fill_references(ctx, message, users, slack2discord_users, channels, messages):
+def fill_references(ctx, message, users, slack2discord_uids, channels, messages):
     """
     Fills in @mentions and #channels with their known display names
     :param message: Raw message to be filled with usernames and channel names instead of IDs
@@ -561,8 +592,8 @@ def fill_references(ctx, message, users, slack2discord_users, channels, messages
             old_str = f"<@{uid}>"
             if old_str in message and slack_name:
                 new_str = f"@{slack_name}"
-                if slack2discord_users and slack_name in slack2discord_users:
-                    discord_name = slack2discord_users[slack_name]
+                if slack2discord_uids and uid in slack2discord_uids:
+                    discord_name = slack2discord_uids[uid]
                     discord_user = ctx.guild.get_member_named(discord_name)
                     if discord_user:
                         new_str = f"{discord_user.mention}"
@@ -604,8 +635,8 @@ def parse_important_files(slack_dir):
     else:
         print(f"[WARNING] No users.json found - @mentions will contain user IDs instead of display names")
 
-    slack2discord_users = get_slack2discord_user_mapping(slack_dir)
-    if slack2discord_users:
+    slack2discord_uids = get_slack2discord_user_mapping(slack_dir, users)
+    if slack2discord_uids:
         print(f"[INFO] slack2discord_users.json found - attempting to map @mentions")
     else:
         print(f"[ERROR] No slack2discord_users.json found.")
@@ -618,7 +649,7 @@ def parse_important_files(slack_dir):
     else:
         print(f"[WARNING] No channels.json found - #channel references will contain their IDs instead of names")
 
-    return users, slack2discord_users, channels
+    return users, slack2discord_uids, channels
 
 # async because of guild.create_text_channel
 async def get_or_create_channel(ctx, name):
@@ -638,36 +669,18 @@ def parse_timestamp(message):
     return '<no timestamp>'
 
 
-def parse_user(ctx, message, users, slack2discord_users):
+def parse_user(ctx, message, users, slack2discord_uids):
     username = "<unknown user>"
-    user = message.get('user_profile')
-    # user = 0
-    if user:
-        keys = ['display_name','name','real_name'] # username keys (ordered by priority)
-        present_keys = [k for k in keys if user.get(k)] # `k in user` would accept empty fields
-        if present_keys: # FIXME: should iterate over present_keys
-            display_name = user[present_keys[0]]
-            for slack_name in slack2discord_users:
-                if display_name == slack_name:
-                    username = slack2discord_users[slack_name]
-            #username = user[present_keys[0]]
-        else:
-            print(f"[ERROR] Unable to parse user: {user}")
+    if "user" in message:
+        print(f"[INFO] Located 'user' field, attempting to map uid to username")
+        uid = message['user']
+        try:
+            username = slack2discord_uids[uid]
+        except KeyError:
+            username = f"<unknown user {uid}>"
+            print(f"[WARNING] Failed to map uid to slack username - name will remain the unmapped uid: {username}")
     else:
-        print(f"[WARNING] No 'user_profile' field in message")
-        print(f"[FIX] Attempting 'user' field for uid")
-        if "user" in message:
-            print(f"[INFO] Located 'user' field, attempting to map uid to username")
-            uid = message['user']
-            if users and uid in users:
-                display_name = users[uid]
-                for slack_name in slack2discord_users:
-                    if display_name == slack_name:
-                        username = slack2discord_users[slack_name]
-            else:
-                print(f"[WARNING] Failed to map uid to slack username - name will remain the unmapped uid: {username}")
-        else:
-            print(f"[ERROR] No 'user' field in message - defaulting to '<unknown user>'")
+        print(f"[ERROR] No 'user' field in message - defaulting to '<unknown user>'")
 
     discord_user = ctx.guild.get_member_named(username)
     if discord_user:
@@ -678,11 +691,11 @@ def parse_user(ctx, message, users, slack2discord_users):
     return mention
 
 
-def parse_text(ctx, message, username, users, slack2discord_users, channels, messages):
+def parse_text(ctx, message, username, users, slack2discord_uids, channels, messages):
     text = message.get('text')
     if text:
         timestamp = parse_timestamp(message)
-        text = fill_references(ctx, text, users, slack2discord_users, channels, messages)
+        text = fill_references(ctx, text, users, slack2discord_uids, channels, messages)
         return f"*{timestamp}* **{username}**: {text}"
     else:
         return None
@@ -864,7 +877,7 @@ def parse_files(message):
     return files, embeds
 
 
-def parse_message(ctx, message, users, slack2discord_users, channels, messages):
+def parse_message(ctx, message, users, slack2discord_uids, channels, messages):
     msg = None
     files = None
     embeds = None
@@ -878,10 +891,10 @@ def parse_message(ctx, message, users, slack2discord_users, channels, messages):
         return None
     
     msg_id = message.get("client_msg_id", None)
-    username = parse_user(ctx, message, users, slack2discord_users)
+    username = parse_user(ctx, message, users, slack2discord_uids)
     
     if "text" in message:
-        msg = parse_text(ctx, message, username, users, slack2discord_users, channels, messages)
+        msg = parse_text(ctx, message, username, users, slack2discord_uids, channels, messages)
     
     if "files" in message:
         files, embeds = parse_files(message)
@@ -999,7 +1012,7 @@ async def send_message(ctx, msg, ref=None, embeds=None, files=None, allowed_ment
     return first_ref
 
 # async because it uses send_message which uses ctx.send() which outputs a coroutine
-async def import_files(ctx, fs, users, slack2discord_users, channels, messages={}):
+async def import_files(ctx, fs, users, slack2discord_uids, channels, messages={}):
     # dict mapping slack msg-id -> discord message for migrating replies.
     # messages = {}
     # dict mapping slack thread_timestamp -> discord thread
@@ -1012,7 +1025,7 @@ async def import_files(ctx, fs, users, slack2discord_users, channels, messages={
             with open(json_file, encoding="utf-8") as f:
                 for message in json.load(f):
                     print(f"[INFO] Parsing message:")
-                    parsed = parse_message(ctx, message, users, slack2discord_users, channels, messages)
+                    parsed = parse_message(ctx, message, users, slack2discord_uids, channels, messages)
                     if parsed:
                         msg_id, msg, files, embeds, thread_ts = parsed
 
@@ -1021,6 +1034,7 @@ async def import_files(ctx, fs, users, slack2discord_users, channels, messages={
                             thread_owner = None
                             if not msg_id:
                                 print(f"[WARNING] No message-id found - will be unlinkable")
+                            # FIXME: Unicode
                             print(f"[INFO] Importing message: '{msg}'")
                             if thread_ts:
                                 # Prefix to clarify message owns/belongs to thread
@@ -1083,12 +1097,12 @@ async def import_slack_directory(ctx, path, slack_dir, match_channel=True, messa
                 await get_or_create_channel(ctx, ch)
 
         print(f"[INFO] Importing channels")
-        users, slack2discord_users, channels = parse_important_files(slack_dir)
+        users, slack2discord_uids, channels = parse_important_files(slack_dir)
         for ch, fs in slack_dir["history"].items():
             print(f"[INFO] Importing channel: {ch}")
             if match_channel == True:
                 ctx = await get_or_create_channel(ctx, ch)
-            messages = await import_files(ctx, fs, users, slack2discord_users, channels)
+            messages = await import_files(ctx, fs, users, slack2discord_uids, channels)
             print(f"[INFO] Completed importing channel: {ch}")
         print(f"[INFO] Import complete")
 
@@ -1176,6 +1190,7 @@ if __name__ == "__main__":
             else:
                 print(f"Couldn't find {path}")
 
+    # FIXME: needs exception handling and expansion of "~"
     if token == "":
         input("Enter bot token: ")
         f = open("~/.secrets/discord_token.txt", "a")
