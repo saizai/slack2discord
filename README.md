@@ -63,9 +63,6 @@ When encountering a uid or channel in a message, it is mapped to the Slack name.
 When migrating a message, the bot prefixes a header of who sent it and when.
 
 ## Features that are NOT Implemented
-### Migrating Files
-The file attachments are not actually reuploaded into discord, but merely posted as an Embed linking to the file's url.
-
 ### Migrating DMs
 The bot is unable to migrate DMs, on account of Slack not exporting DMs.
 Even if Slack did, the bot would not have access to all Discord user's accounts, and would thus be unable to send DMs from them.
